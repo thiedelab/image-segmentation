@@ -1,3 +1,4 @@
+import math
 from skimage import filters, exposure, measure, morphology,segmentation,color,graph, io
 from skimage.segmentation import watershed, random_walker, active_contour
 from skimage.feature import canny, peak_local_max
@@ -13,13 +14,14 @@ import numpy as np
 from sklearn.cluster import spectral_clustering, DBSCAN
 from scipy.optimize import curve_fit
 import pims
-from collections import Counter
+import cv2
+from sklearn.cluster import KMeans
+import matplotlib.cm as cm
 
 data_path = "data/f3 -0.1V.tif"
 
 # Open the image sequence
 raw_frames = pims.open(data_path)
-
 
 images = []
 for i in range(len(raw_frames)):
@@ -171,18 +173,44 @@ def spectral_cluster_of_img(img,i):
 def stack_contours(contour):
     return np.vstack(contour)
 
-def get_contour_patches(image,contour_point, delta = 10):
-    # padded_image = np.pad(image, pad_width=delta, mode='constant', constant_values=0)
-    # Since we padded the image by adding zeros, we must translate our coordinates
-    v_dim, h_dim = image.shape
-    y = int(round(contour_point[0]))
-    x = int(round(contour_point[1]))
-    if x - delta >= 0 and y - delta >= 0 and x + delta < h_dim and y + delta < v_dim:
-        patch  = np.array(image[y - delta:y + delta + 1, x - delta:x + delta + 1])
-        return patch
+# def get_contour_patches(image,contour_point, delta = 10):
+#     # padded_image = np.pad(image, pad_width=delta, mode='constant', constant_values=0)
+#     # Since we padded the image by adding zeros, we must translate our coordinates
     
-    # patch = padded_image[y - delta:y + delta + 1, x - delta:x + delta + 1]
-    # return patch
+#     # Here we are getting overlapping patches. We don't want our patches to overlap
+#     # We need to presave the previous so that we are not with in that boundary
+#     v_dim, h_dim = image.shape
+#     y = int(math.floor(contour_point[0]))
+#     x = int(math.floor(contour_point[1]))
+    
+#     if x - delta >= 0 and y - delta >= 0 and x + delta < h_dim and y + delta < v_dim:
+#         patch  = np.array(image[y - delta:y + delta + 1, x - delta:x + delta + 1])
+#         return (patch,y,x)
+    
+#     # patch = padded_image[y - delta:y + delta + 1, x - delta:x + delta + 1]
+#     # return patch
+
+def get_contour_patches(image, contour_point, delta=10, prev_patch=None):
+    # Get the image dimensions
+    v_dim, h_dim = image.shape
+    y = int(math.floor(contour_point[0]))
+    x = int(math.floor(contour_point[1]))
+    
+    # Check if the patch fits within the image bounds
+    if x - delta >= 0 and y - delta >= 0 and x + delta < h_dim and y + delta < v_dim:
+        # Ensure that the new patch does not overlap with the previous one
+        if prev_patch is not None:
+            _, prev_y, prev_x = prev_patch
+            # Check if the current patch overlaps with the previous patch
+            if abs(y - prev_y) <= 2 * delta and abs(x - prev_x) <= 2 * delta:
+                return None 
+
+        # Extract the patch from the image
+        patch = np.array(image[y - delta:y + delta + 1, x - delta:x + delta + 1])
+        
+        # Return the patch along with its coordinates
+        return (patch, y, x)
+    
 
 def plot_feature_matrix(feature_matrix, max_cols = 100):
     # SCIPY + GPT
@@ -211,6 +239,7 @@ def plot_feature_matrix(feature_matrix, max_cols = 100):
         
 def get_feature_matrix(images):
     feature_matrix = []
+    feature_matrix_with_pos = []
     ##### Instead of padding, we may have to get rid of points that are too close to the edge. Let's try to do that now.
     for i, image in enumerate(images):
         # Segment the image before we do anything else
@@ -222,18 +251,25 @@ def get_feature_matrix(images):
         # Get the longest contour. There can only be 1, but we made it a trivial list of length 1 for a clean for loop
         longest_contour = [arr for arr in contour if len(arr) == max_length]
         # Set up our inner row matrix
+
         inner_row_matrix = []
+        inner_row_matrix_pos = []
+        prev_patch = None
         for points in longest_contour[0]:
-            patch = get_contour_patches(image,points)
-            # Just in case
-            if patch is not None:
-                # print(f"Shape of patch is: {patch.shape}")
-                ### Added the coordinates of the contours for visualization purposes. Must revert back.
-                # inner_row_matrix.append((patch, points[0], points[1]))
-                inner_row_matrix.append(patch)
+            patch_result = get_contour_patches(image, points, delta = 10, prev_patch = prev_patch)
+            if patch_result is not None:
+                patch, y, x = patch_result
+    
+                prev_patch = (patch, y, x)
+                inner_row_matrix.append((patch))
+                inner_row_matrix_pos.append({"patch":patch, "y_pos": y, "x_pos": x})
+        
         inner_row_matrix = np.array(inner_row_matrix)
+        inner_row_matrix_pos = np.array(inner_row_matrix_pos)
         feature_matrix.append(inner_row_matrix)
-    return np.array(feature_matrix, dtype = object)
+        feature_matrix_with_pos.append(inner_row_matrix_pos)
+
+    return np.array(feature_matrix, dtype=object), np.array(feature_matrix_with_pos, dtype=object)
 
 # Irrelevant now
 def pad_patches(X, target_patches):
@@ -364,47 +400,238 @@ def plot_best_fit_curve(unitary_matrix):
 
 def dimensionality_reduction(data_points, spanning_set):
     projected_space = []
+    print(f"Dimension of the spanning_set is: {spanning_set.shape}")
     for row_vector in data_points:
         
         reduced_space = row_vector @ spanning_set.T
         projected_space.append(np.array(reduced_space)) 
-        
+    # Having it as type object may be a problem we have to fix    
     projected_space = np.array(projected_space, dtype=object)     
     return projected_space
 
-def visualize_dimensionally_reduced_feature(feature_matrix, left_sv_set, right_sv_set):
+def visualize_dimensionally_reduced_feature(feature_matrix, left_sv_set, right_sv_set, feature_matrix_pos):
     # We first reshape each entry of the feature matrix
     reshaped_feature = [feature.reshape(feature.shape[0],-1) for feature in feature_matrix]
-    
+    print(f"The shape of the first reshaped feature is: {reshaped_feature[0].shape}")
     reshaped_feature = np.array(reshaped_feature, dtype=object)
  
     left_dim_red_feature = dimensionality_reduction(reshaped_feature,left_sv_set)
+    print(f"The dimension of the first row vector of left_dim_red_feature is: {left_dim_red_feature[0].shape}")
     right_dim_red_feature = dimensionality_reduction(reshaped_feature,right_sv_set)
     
     left_dim_red_feature = np.array(left_dim_red_feature)    
     right_dim_red_feature = np.array(right_dim_red_feature)
-    # print(f"Dimension of left_red is: {left_dim_red_feature.shape}")
+    # print(f"Dimension of left_red is: {left_dim_red_feature[0].shape}")
     # plot_3d_reduced_features(left_dim_red_feature)
     # plot_3d_reduced_features(right_dim_red_feature)
     
-    cluster_labels, clustered_images = cluster_and_trace_back(left_dim_red_feature, feature_matrix)
-    visualize_clusters(left_dim_red_feature, cluster_labels)
+    # cluster_labels, clustered_images = cluster_and_trace_back_kmeans(left_dim_red_feature, feature_matrix)
+    # visualize_clusters(left_dim_red_feature, cluster_labels)
     
-    for cluster_label, images in clustered_images.items():
-        images = np.array(images)
-        print(f"Num of images is: {len(images)}")
-        # mean_image = np.mean(images, axis = 0)
-        # print(f"Dimension of mean_image is: {mean_image.shape}")
-        for img in images:
-            plt.figure(figsize=(3, 3))
-            plt.imshow(segment_particles(img), cmap='gray')  
-            plt.title(f"Cluster {cluster_label} - Image {i+1}")
-            plt.axis('off')
-            plt.show()
-    
-    
+    for idx,feature in enumerate(left_dim_red_feature):
+        # This is a bit better I guess. NOw for each cluster point, we get the corresponding patches and we must indicate 
+        cluster_labels, clustered_images = cluster_and_trace_back_kmeans_single_feature(feature, feature_matrix_pos, idx)
+        # visualize_clusters(feature, cluster_labels)
+        # Why do we only see it for the first image
+        visualize_clusters(feature,cluster_labels)
+        print(f"The shape of the feature is: {feature.shape}")
+        map_back_clusters_to_images(images,clustered_images,idx)
+        
+    # tot_num = 0
+    # for cluster_label, patch_infos in clustered_images.items():
+    #     # images = np.array(images)
+    #     # tot_num += (len(images))
+    #     # print(f"Num of images is: {images.shape}")
+    #     # # mean_image = np.mean(images, axis = 0)
+    #     # # print(f"Dimension of mean_image is: {mean_image.shape}")
+    #     # for img in images:
+    #     #     plt.figure(figsize=(3, 3))
+    #     #     plt.imshow(segment_particles(img), cmap='gray')  
+    #     #     plt.title(f"Cluster {cluster_label} - Image {i+1}")
+    #     #     plt.axis('off')
+    #     #     plt.show()
+        
+    #     # images = np.array(images)
+    #     # print(f"Num of images in Cluster {cluster_label} is: {images.shape}")
 
-def cluster_and_trace_back(data, feature_matrix, eps=0.17, min_samples=7):
+    #     # # Process images for creating a single full image grid
+    #     # segmented_images = [segment_particles(img) for img in images]
+        
+    #     # # Calculate the grid size
+    #     # num_images = len(segmented_images)
+    #     # grid_cols =  int(np.ceil(np.sqrt(num_images)))          
+        
+    #     # grid_rows = int(np.ceil(num_images / grid_cols))
+        
+    #     # # Create a canvas for the grid
+    #     # img_height, img_width = segmented_images[0].shape
+    #     # combined_image = np.zeros((grid_rows * img_height, grid_cols * img_width))
+
+    #     # # Place each image in the grid
+    #     # for idx, img in enumerate(segmented_images):
+    #     #     row = idx // grid_cols
+    #     #     col = idx % grid_cols
+    #     #     combined_image[row * img_height:(row + 1) * img_height, col * img_width:(col + 1) * img_width] = img
+        
+    #     combined_image = create_fixed_size_grid(images,135,555)
+    #     # Display the combined image
+    #     plt.figure(figsize=(15, 15))
+    #     plt.imshow(combined_image, cmap='gray')
+    #     plt.title(f"Cluster {cluster_label} - Combined Full Image")
+    #     plt.axis('off')
+    #     plt.show()
+    return left_dim_red_feature, right_dim_red_feature
+
+
+def map_back_clusters_to_images(original_images, clustered_images, index, patch_size=20, colormap='jet'):
+    
+    # Create an empty list to store images with overlays
+    cmap = cm.get_cmap(colormap, len(clustered_images))  # One color per cluster
+
+    # Initialize the overlay image for the specified index
+    overlaid_image = np.zeros((*original_images[index].shape, 3), dtype=np.float32)
+
+    # Iterate through the clusters and add overlays for the specified index
+    for cluster_label, patches in clustered_images.items():
+        color = cmap(cluster_label)[:3]  # Get RGB color for the cluster (ignore alpha)
+
+        for patch_info in patches:
+            if patch_info["feature_idx"] == index:
+                y, x = patch_info["y_pos"], patch_info["x_pos"]
+                half_size = patch_size // 2
+
+                
+                y_start, y_end = max(0, y - half_size), min(overlaid_image.shape[0], y + half_size)
+                x_start, x_end = max(0, x - half_size), min(overlaid_image.shape[1], x + half_size)
+
+                
+                overlaid_image[y_start:y_end, x_start:x_end] += np.array(color)
+
+    # Clip values to ensure they are within [0, 1] range
+    overlaid_image = np.clip(overlaid_image, 0, 1)
+
+    # Visualize the overlaid image
+    plt.figure(figsize=(10, 10))
+    plt.imshow(segment_particles(original_images[index]), cmap='gray')
+    plt.imshow(overlaid_image, alpha=0.5)  # Overlay with transparency
+    plt.title(f"Image {index} with Cluster Overlay")
+    plt.axis('off')
+    plt.show()
+
+    return overlaid_image
+
+def cluster_and_trace_back_kmeans_single_feature(data, feature_matrix_pos, feature_idx, n_clusters=3, random_state=42):
+    
+    
+    flattened_data = np.array(data)
+    # print(f"Dim of Flattened_data is: {flattened_data.shape}")
+    
+    
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
+    cluster_labels = kmeans.fit_predict(flattened_data)
+    
+    clustered_patches = {}
+
+    for row_idx, label in enumerate(cluster_labels):
+        
+        patch_info = feature_matrix_pos[feature_idx][row_idx]
+
+        if label not in clustered_patches:
+            clustered_patches[label] = []
+        
+        clustered_patches[label].append(
+            {
+                "feature_idx": feature_idx,
+                "patch": patch_info["patch"],
+                "y_pos": patch_info["y_pos"],
+                "x_pos": patch_info["x_pos"]
+            }
+        )
+
+    return cluster_labels, clustered_patches
+
+### Derived code.###
+def create_fixed_size_grid(images, target_height, target_width):
+   
+    num_images = len(images)
+    # Calculate the grid dimensions
+    grid_cols = int(np.ceil(np.sqrt(num_images)))
+    grid_rows = int(np.ceil(num_images / grid_cols))
+
+    # Determine the size of each cell in the grid
+    cell_height = target_height // grid_rows
+    cell_width = target_width // grid_cols
+
+    # Create a blank canvas for the grid
+    combined_image = np.zeros((target_height, target_width), dtype=np.float32)
+
+    # Place each image in the grid
+    for idx, img in enumerate(images):
+        # Resize each image to fit the cell size
+        resized_img = cv2.resize(img, (cell_width, cell_height), interpolation=cv2.INTER_AREA)
+
+        # Compute row and column positions in the grid
+        row = idx // grid_cols
+        col = idx % grid_cols
+
+        # Compute the slice indices for placement
+        start_row = row * cell_height
+        end_row = start_row + cell_height
+        start_col = col * cell_width
+        end_col = start_col + cell_width
+
+        # Place the resized image in the grid
+        combined_image[start_row:end_row, start_col:end_col] = resized_img
+
+    return combined_image
+
+    
+def cluster_and_trace_back_kmeans(data, feature_matrix, feature_matrix_pos, n_clusters=3, random_state=42):
+    # data here refers to the reduced feature
+    flattened_data = np.vstack(data)
+    print(f"Dim of Flattened_data is: {flattened_data.shape}")
+    print(f"flattened_data is: {flattened_data}")
+    # print(f"Dimension of feature_matrix is: {feature_matrix[0].shape}")
+    # print(f"Dimension of flattened_data is: {flattened_data.shape}")
+    total_points = [len(feature) for feature in data]  
+    cumulative_counts = np.cumsum([0] + total_points)
+    
+    # Fit k-means
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
+    cluster_labels = kmeans.fit_predict(flattened_data)
+    # How many clusters are there: 
+    print(f"The number of clusters: {len(cluster_labels)}")
+    # We are considering all the images all at once
+    # Reconstruct each row’s "origin" and group them by cluster label
+    clustered_images = {}
+   
+    for idx, label in enumerate(cluster_labels):
+        # Figure out which "feature block" (image/patch) this row comes from
+        feature_idx = np.searchsorted(cumulative_counts, idx, side="right") - 1
+        row_idx = idx - cumulative_counts[feature_idx]
+        print(f"feature_idx, row_idx is: {(feature_idx, row_idx)}")
+        patch_info = feature_matrix_pos[feature_idx][row_idx]
+        
+        # Populate dictionary of cluster -> rows
+        if label not in clustered_images:
+            clustered_images[label] = []
+        
+        # MAIN QUESTION: How can we get coordinate information so that we can draw
+        # The question is, do we get any relevant coordinate information from the mapped_patch
+        
+        clustered_images[label].append(
+            {
+                "feature_idx": feature_idx,
+                "patch": patch_info["patch"],
+                "y_pos": patch_info["y_pos"],
+                "x_pos": patch_info["x_pos"]
+            }
+        )
+        
+
+    return cluster_labels, clustered_images
+    
+def cluster_and_trace_back_DB_SCAN(data, feature_matrix, eps=0.17, min_samples=8):
     flattened_data = np.vstack(data) 
     print(f"Dimension of flattened_data is: {flattened_data.shape}")
     total_points = [len(feature) for feature in data]  # Number of points per feature
@@ -412,8 +639,7 @@ def cluster_and_trace_back(data, feature_matrix, eps=0.17, min_samples=7):
     
     clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(flattened_data)
     cluster_labels = clustering.labels_
-    # What is the point of the flattened feature then? -> To analyze the cluster.
-   
+    
     clustered_images = {}
     # I am not sure about this, especially about how the idx is chosen
     for idx, label in enumerate(cluster_labels):
@@ -433,11 +659,11 @@ def cluster_and_trace_back(data, feature_matrix, eps=0.17, min_samples=7):
 
     return cluster_labels, clustered_images
 
-def visualize_clusters(data, cluster_labels):
+def visualize_clusters(data, cluster_labels, color_map="jet"):
     
     fig = plt.figure(figsize=(10, 7))
     ax = fig.add_subplot(projection='3d')
-
+    cmap = cm.get_cmap(color_map, max(cluster_labels) + 1)
     # Coloring mechanism
     unique_labels = set(cluster_labels)
     for label in unique_labels:
@@ -445,7 +671,7 @@ def visualize_clusters(data, cluster_labels):
             color = "k"  # Black for noise
             label_name = "Noise"
         else:
-            color = plt.cm.get_cmap("tab20")(label / (max(unique_labels) + 1))
+            color = cmap(label)[:3]  # Get the RGB color for the cluster
             label_name = f"Cluster {label}"
 
         cluster_points = np.vstack(data)[cluster_labels == label]
@@ -473,29 +699,54 @@ def plot_3d_reduced_features(reduced_features):
 
 def plot_feature_images(feature_matrix, images):
     # After plotting each cluster image, we now plot the aggregate of each row in the feature matrix, to get an idea of what it is supposed to look like
+    # Manually check the first patch and look at it side by side
+    
     for idx, feature in enumerate(feature_matrix):
-        patches = feature[:40]
+        patches = feature[:20]
+
         for i, (patch, y_pos, x_pos) in enumerate(patches):
-            fig, axes = plt.subplots(1, 2, figsize=(20, 20))  # Create a figure with 1 row and 2 columns
+            fig, axes = plt.subplots(1, 4, figsize=(30, 30))  # Create a figure with 1 row and 3 columns
+            # Plot the patch
             
-            axes[0].imshow(segment_particles(patch), cmap='gray')
-            axes[0].set_title(f"{i}th patch centered at {(x_pos,y_pos)}")
-            axes[0].axis('off')  # Hide the axes for better visualization
+            # It could be the case that there is an issue with how the patches are generated
+            axes[0].imshow(segment_particles(patch))
+            axes[0].set_title(f"{i}th patch centered at {(x_pos, y_pos)}")
+            axes[0].axis('off')  
             
-            axes[1].imshow(segment_particles(images[idx]), cmap='gray')
-            axes[1].set_title(f"{idx}th image")
+            # Plot the full image with zooming based on patch center
+            axes[1].imshow(segment_particles(images[idx]))
+            axes[1].set_title(f"{idx}th image zoomed in")
+            
+            # Dynamically adjust the zoom region based on the current patch's coordinates
+            zoom_size = 20  # Adjust based on the size of the region you want to zoom in on
+            axes[1].set_xlim(x_pos - zoom_size, x_pos + zoom_size)
+            axes[1].set_ylim(y_pos - zoom_size, y_pos + zoom_size)
             axes[1].axis('off')
             
+            manual_patch = images[idx][y_pos - 10: y_pos + 11, x_pos - 10: x_pos + 11]
+            axes[2].imshow(segment_particles(manual_patch))
+            axes[2].set_title(f"Actual image patch based on the center ")
+            axes[2].axis('off')
+            
+            axes[3].imshow(segment_particles(images[idx]))
+            axes[3].set_title("Original image")
+            axes[3].axis('off')
+
+           
             fig.suptitle(f"Comparison of {i}th patch and {idx}th image", fontsize=14)
             # May be we should add positional encoding as well
             # Show the figure
             plt.show()
+            
 
-feature_matrix = get_feature_matrix(images)
+#################### MOST OF THE FUNCTION CALLS########################################
+
+feature_matrix, feature_matrix_pos = get_feature_matrix(images)
+# plot_feature_images(feature_matrix,images)
 learned_coeff = regress_features(feature_matrix)
 U,_,Vh = get_singular_value_decomp(learned_coeff)
 left_spanning, right_spanning = spanning_left_right_SV(U,Vh)
-visualize_dimensionally_reduced_feature(feature_matrix,left_spanning,right_spanning)
+left, _ = visualize_dimensionally_reduced_feature(feature_matrix,left_spanning,right_spanning,feature_matrix_pos)
 
 
 # Example usage:
