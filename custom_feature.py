@@ -412,11 +412,11 @@ def dimensionality_reduction(data_points, spanning_set):
 def visualize_dimensionally_reduced_feature(feature_matrix, left_sv_set, right_sv_set, feature_matrix_pos):
     # We first reshape each entry of the feature matrix
     reshaped_feature = [feature.reshape(feature.shape[0],-1) for feature in feature_matrix]
-    print(f"The shape of the first reshaped feature is: {reshaped_feature[0].shape}")
+    # print(f"The shape of the first reshaped feature is: {reshaped_feature[0].shape}")
     reshaped_feature = np.array(reshaped_feature, dtype=object)
  
     left_dim_red_feature = dimensionality_reduction(reshaped_feature,left_sv_set)
-    print(f"The dimension of the first row vector of left_dim_red_feature is: {left_dim_red_feature[0].shape}")
+    # print(f"The dimension of the first row vector of left_dim_red_feature is: {left_dim_red_feature[0].shape}")
     right_dim_red_feature = dimensionality_reduction(reshaped_feature,right_sv_set)
     
     left_dim_red_feature = np.array(left_dim_red_feature)    
@@ -737,16 +737,253 @@ def plot_feature_images(feature_matrix, images):
             # May be we should add positional encoding as well
             # Show the figure
             plt.show()
-            
+ # There is something wrong with how we generate the patches. We may have to fix something. 
+ 
+def pad_feature_matrices(feature_matrix):
+    """Pads all matrices to have the same number of rows by adding zero matrices."""
+    
+    max_rows = max(mat.shape[0] for mat in feature_matrix)  # Find the max number of rows
+    print(f"Max rows: {max_rows}")
+
+    padded_matrices = []
+
+    for mat in feature_matrix:
+        current_rows = mat.shape[0]
+        print(f"Before padding, rows: {current_rows}")
+
+        # If there are missing rows, pad with zero (21x21) matrices
+        if current_rows < max_rows:
+            diff = max_rows - current_rows
+            zero_pad = np.zeros((diff, 21, 21))  # Create zero-padding
+            padded_mat = np.concatenate((mat, zero_pad), axis=0)  # Append padding
+        else:
+            padded_mat = mat  # No padding needed
+        
+        print(f"After padding, rows: {padded_mat.shape[0]}")
+        padded_matrices.append(padded_mat)
+
+    return np.array(padded_matrices)  # Convert list to a NumPy array
+
+def rate_of_growth(feature_matrix):
+    """Computes the rate of growth by finding the difference between consecutive frames."""
+    print(f"Shape of feature matrix before padding: {np.shape(feature_matrix)}")
+    
+    feature_matrix = pad_feature_matrices(feature_matrix)  # Ensure consistent shape
+    print(f"Shape of feature matrix after padding: {np.shape(feature_matrix)}")
+    
+    growth = [np.zeros_like(feature_matrix[0])]  # Initialize with a zero matrix
+
+    # Compute the growth as the difference between consecutive frames
+    for i in range(1, len(feature_matrix)):
+        growth.append(feature_matrix[i] - feature_matrix[i - 1])
+
+    return np.array(growth)  # Convert list back to NumPy array
+
+
+
+def plot_growth_per_column_subplots(growth):
+    num_timesteps = len(growth)
+    num_rows, num_cols, _ = growth[0].shape
+
+    fig, axes = plt.subplots(nrows=1, ncols=num_cols, figsize=(15, 5), sharey=True)
+
+    for col in range(num_cols):  
+        ax = axes[col] if num_cols > 1 else axes
+
+        # Loop through each row and extract its values over time
+        for row in range(num_rows):
+            patch_values = [growth[t][row, col] for t in range(num_timesteps)]  # Extract growth for (row, col)
+            ax.plot(range(num_timesteps), patch_values, marker='o', linestyle='-', label=f"Row {row}")
+
+        ax.set_xlabel("Time")
+        ax.set_title(f"Column {col}")
+        ax.grid(True)
+        if col == 0:
+            ax.set_ylabel("Growth Value")
+        ax.legend(fontsize="small", loc="upper right")
+
+    plt.tight_layout()  # Adjust layout to avoid overlapping
+    plt.show()
+
+def plot_growth_graph(growth, patch_index):
+
+    num_timesteps = len(growth)
+    num_rows, num_cols = growth[0].shape  # Assuming all matrices have the same shape
+
+    if patch_index >= num_cols:
+        print(f"Invalid patch index {patch_index}. Max index is {num_cols - 1}.")
+        return
+
+    plt.figure(figsize=(12, 6))
+
+    # Track the growth change for the selected patch across all timesteps
+    growth_values = []
+    for t in range(num_timesteps):
+        # Gather the values for the specific patch (column) for the current timestep (row-wise)
+        growth_values.extend(growth[t][:, patch_index])
+
+    # Plotting
+    plt.plot(range(len(growth_values)), growth_values, label=f"Patch {patch_index}")
+    plt.title(f"Growth Values Over Time for Patch {patch_index}")
+    plt.xlabel("Time")
+    plt.ylabel("Growth Value")
+    plt.legend(loc="upper right")
+    plt.grid(True)
+    plt.show()
+    
+def plot_growth_changes(feature_matrix, patch_index):
+    num_timesteps = len(feature_matrix)
+    patch_height, patch_width = feature_matrix[0].shape[1], feature_matrix[0].shape[2]  # 21x21 size
+    
+    growth_values = []
+
+    # Track the sum of changes (or mean/max) for each patch over time
+    for t in range(1, num_timesteps):
+        # Calculate the difference between consecutive timesteps for the selected patch
+        growth = np.abs(feature_matrix[t][patch_index] - feature_matrix[t-1][patch_index])
+        growth_sum = np.sum(growth)  # Sum of pixel-wise changes (you can replace this with mean/max if desired)
+        growth_values.append(growth_sum)
+
+    # Plotting the quantified growth (sum of changes)
+    plt.figure(figsize=(12, 6))
+    plt.plot(range(1, num_timesteps), growth_values, label=f"Patch {patch_index} Growth")
+    plt.title(f"Change in Growth Over Time for Patch {patch_index}")
+    plt.xlabel("Time (Timestep)")
+    plt.ylabel("Total Growth (Sum of Pixel Changes)")
+    plt.legend(loc="upper right")
+    plt.grid(True)
+    plt.show()
+    
+
+
+def calculate_average_growth_rate_bin(feature_matrix):
+    num_timesteps = len(feature_matrix)
+    # We dont need to pad here. We don't care about the patch growth yet
+    
+    # Track the sum of changes for the entire material over time
+    growth_rates = []
+    for t in range(1, num_timesteps):
+        # Calculate the difference between consecutive timesteps for all patches in the material
+        diff = sum_patches(feature_matrix[t]) - sum_patches(feature_matrix[t - 1])
+        print(f"diff is {diff}")
+        # Total sum of the white pixels
+        growth_rates.append(diff)
+        
+    timesteps = np.arange(1, feature_matrix.shape[0])
+    
+    # Distribution of growth rate over time (Bar plot instead of Histogram)
+    plt.subplot(2, 1, 1)  # First subplot
+    plt.bar(timesteps, growth_rates, color='skyblue', edgecolor='black', alpha=0.7)
+    plt.xlabel('Timestep')
+    plt.ylabel('Growth rate')
+    plt.title('Avergae Binarized Growth rate')
+
+    # Line plot for growth rate over time
+    plt.subplot(2, 1, 2)  # Second subplot
+    plt.plot(timesteps, growth_rates, marker='o', linestyle='-', color='blue', label="Growth Rate")
+    plt.xlabel('Timestep')
+    plt.ylabel('Growth Rate')
+    plt.title('Average Binarized Growth Rate Over Time')
+    plt.legend()
+    plt.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+    
+    
+
+# A small helper to sum over entire patches. We may require some overlapping behaviour between the patches.
+def sum_patches(patches):
+    accum = np.zeros((21,21))
+    for patch in patches:
+        accum += patch 
+    return np.sum(accum)
+
+ # Avergage growth for the original set of images(NON-BINARIZED)
+def org_avergage_growth_rate(images):
+    rate_change = []
+    for i in range(1, len(images)):
+        rate_change.append(np.sum(image[i] - image[i - 1]))
+    x_axis = np.arange(1, len(rate_change) + 1)
+
+    plt.figure(figsize=(10, 6))
+
+    # Distribution of growth rate over time (Bar plot instead of Histogram)
+    plt.subplot(2, 1, 1)  # First subplot
+    plt.bar(x_axis, rate_change, color='skyblue', edgecolor='black', alpha=0.7)
+    plt.xlabel('Timestep')
+    plt.ylabel('Original Growth rate')
+    plt.title('Avergae Original Growth rate')
+
+    # Line plot for growth rate over time
+    plt.subplot(2, 1, 2)  # Second subplot
+    plt.plot(x_axis, rate_change, marker='o', linestyle='-', color='blue', label="Growth Rate")
+    plt.xlabel('Timestep')
+    plt.ylabel('Peak Growth Rate')
+    plt.title('Average Original Growth Rate Over Time')
+    plt.legend()
+    plt.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
+# Global maxima    
+def plot_height_growth_rate(images):
+    peak_growth_rate = []
+    # It would be cool if we can definitively determine whether whatever structure we are on is dendritic or not
+    for i, image in enumerate(images):
+        # It is advised that we segment here
+        segmented_image = segment_particles(image)
+        contour = edge_detector(segmented_image)
+        # Get the length of the longest array
+        # print(max(contour, key=len))
+        #What exactly does the contour look like
+        
+        max_length = len(max(contour, key=len))
+        # Get the longest contour. There can only be 1, but we made it a trivial list of length 1 for a clean "for loop"
+        longest_contour = [arr for arr in contour if len(arr) == max_length]
+        # We need the maximum y value
+        
+        peak_height = np.max(longest_contour[0][:,1])
+        # print(f"Peak_height is: {peak_height}")
+        peak_growth_rate.append(peak_height)
+    # We plot the change now
+    x_axis = np.arange(1,61)
+    plt.figure(figsize=(10,8))
+    plt.plot(x_axis,peak_growth_rate)
+    plt.xlabel('Timestep')
+    plt.ylabel('Average Growth Rate')
+    plt.title('Signed Maximum Height Growth Rate Over Time for Entire Binarized Material')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+    
+    
+# We have the conour, we always determine the longest contour between frames
 
 #################### MOST OF THE FUNCTION CALLS########################################
-
+org_avergage_growth_rate(images)
+plot_height_growth_rate(images)
 feature_matrix, feature_matrix_pos = get_feature_matrix(images)
+calculate_average_growth_rate_bin(feature_matrix)
+
+# growth = rate_of_growth(feature_matrix)
+# curr = 0
+# # 
+# plot_average_growth_rate(feature_matrix)
+# for i in range(len(feature_matrix[0])):
+
+#     plot_growth_changes(feature_matrix,i)
+#     calculate_average_growth_rate(feature_matrix,i)
+# plot_growth_per_column_subplots(growth)
+# print(f"Dim of feature_matrix: {feature_matrix}")
 # plot_feature_images(feature_matrix,images)
+
 learned_coeff = regress_features(feature_matrix)
-U,_,Vh = get_singular_value_decomp(learned_coeff)
-left_spanning, right_spanning = spanning_left_right_SV(U,Vh)
-left, _ = visualize_dimensionally_reduced_feature(feature_matrix,left_spanning,right_spanning,feature_matrix_pos)
+# U,_,Vh = get_singular_value_decomp(learned_coeff)
+# left_spanning, right_spanning = spanning_left_right_SV(U,Vh)
+# left, _ = visualize_dimensionally_reduced_feature(feature_matrix,left_spanning,right_spanning,feature_matrix_pos)
 
 
 # Example usage:
@@ -761,9 +998,8 @@ for i, image in enumerate(images):
     # Step 3: Label and filter regions
     labeled_image, regions = label_and_filter_regions(segmented_image)
     # Step 4: Visualize the results
-    # contours = measure.find_contours(labeled_image, level=0.8)
-    # image_separator(labeled_image,i)
-    # # visualize_results(segmented_image, regions)
+    
+    visualize_results(segmented_image, regions)
     edge_file_name = "detected_edges" + str(i) + ".png"
     # plot_contours(labeled_image, contours)
     # edge_detector(labeled_image, output_filename = edge_file_name)
