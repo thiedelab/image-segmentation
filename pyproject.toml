@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "em_analysis"
+version = "0.0.1"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "scikit-image",
+    "scikit-learn",
+    "opencv-python",
+    "pims",
+    "tqdm",
+]
+gT
