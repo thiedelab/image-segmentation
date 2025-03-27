@@ -9,6 +9,7 @@ from skimage import (
     # graph,
     # io,
 )
+from typing import Callable
 from skimage.segmentation import watershed
 
 # from skimage.segmentation import random_walker
@@ -54,12 +55,16 @@ def load_images(data_path: str):
     return images
 
 
-def binarize_image(image):
-    smoothed_image = filters.gaussian(image, sigma=1)
+def binarize_image(image, sigma=1, threshold_function: Callable = None):
+    smoothed_image = filters.gaussian(image, sigma=sigma)
 
     # thresholding using Otsu's method
-    threshold_value = filters.threshold_otsu(smoothed_image)
-    binary_image = smoothed_image >= threshold_value
+    if threshold_function is None:
+        threshold_value = filters.threshold_otsu(smoothed_image)
+        binary_image = smoothed_image >= threshold_value
+    else:
+        binary_image = threshold_function(smoothed_image)
+    # binary_image = morphology.remove_small_holes(binary_image, area_threshold=(image.shape[0] * image.shape[1]) // 100)
     return binary_image
 
 
