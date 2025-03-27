@@ -4,6 +4,7 @@ from math import floor, ceil
 from em_analysis.contour_analysis import extract_long_contours_from_movie
 from tqdm import tqdm
 
+
 def _find_points_in_field_of_view(
     contour: np.ndarray,
     half_patch_size: int,
@@ -18,10 +19,11 @@ def _find_points_in_field_of_view(
     )
     return full_patch_in_view
 
+
 def _extract_viewable_patches(points_in_view, image, contour, half_patch_size):
     viewable_contour = contour[points_in_view]
     patches = []
-    for point in tqdm(viewable_contour):
+    for point in viewable_contour:
         patch = image[
             floor(point[0] - half_patch_size) : ceil(point[0] + half_patch_size),
             floor(point[1] - half_patch_size) : ceil(point[1] + half_patch_size),
@@ -29,6 +31,7 @@ def _extract_viewable_patches(points_in_view, image, contour, half_patch_size):
         patches.append(patch)
     patches = np.array(patches)
     return patches, viewable_contour
+
 
 def extract_patches(
     image: np.ndarray, contour: np.ndarray, half_patch_size: int
@@ -45,11 +48,14 @@ def extract_patches(
 
     return np.array(patches), viewable_contour
 
-def calculate_growth_rate(
-    image_stack: np.ndarray, half_patch_size: int, pre_growth_filter: Callable = None
-):
-    contours, filled_images = extract_long_contours_from_movie(image_stack)
 
+def calculate_growth_rate(
+    image_stack: np.ndarray,
+    contours,
+    half_patch_size: int,
+    pre_growth_filter: Callable = None,
+    pixel_width: float = 1.0,
+):
     images_for_growth_calc = image_stack
     if pre_growth_filter is not None:
         images_for_growth_calc = pre_growth_filter(image_stack)
@@ -63,18 +69,20 @@ def calculate_growth_rate(
         image_i = images_for_growth_calc[i]
         image_i_plus_1 = images_for_growth_calc[i + 1]
 
-        patches_at_time_t, viewable_contour  = _extract_viewable_patches(
+        patches_at_time_t, viewable_contour = _extract_viewable_patches(
             full_patch_in_view, image_i, contour, half_patch_size
         )
         patches_at_time_t_plus_1, _ = _extract_viewable_patches(
             full_patch_in_view, image_i_plus_1, contour, half_patch_size
         )
+        patch_size = np.prod(patches_at_time_t[0].shape) * pixel_width**2
+        # print(patch_size)
 
-        dPatch = np.sum(patches_at_time_t_plus_1 - patches_at_time_t, axis=(1, 2))
+        dPatch = (
+            np.sum(patches_at_time_t_plus_1 - patches_at_time_t, axis=(1, 2))
+            / patch_size
+        )
         growth_rates.append(dPatch)
         viewable_contours.append(viewable_contour)
-    
+
     return growth_rates, viewable_contours
-
-
-
