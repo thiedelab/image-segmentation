@@ -37,7 +37,7 @@ def calculate_growth_rate_at_contour(
         A list of contours extracted from the video.
     growth_rate_at_contour: List[np.ndarray]
         The value of the local growth rate estimated at each point in the contour
-    growth_rate: np.ndarray
+    growth_rate_video: np.ndarray
         The estimated growth rate everywhere in the image.
 
     TODO
@@ -65,22 +65,24 @@ def calculate_growth_rate_at_contour(
         x, sigma=np.array([5, 5]), mode="reflect"
     )
     filtered_at_time = np.array([growth_rate_filter(x) for x in video])
-    growth_rate = np.zeros_like(filtered_at_time)
+    growth_rate_video = np.zeros_like(filtered_at_time)
 
     # Central difference for middle points
-    growth_rate[1:-1] = (filtered_at_time[2:] - filtered_at_time[:-2]) / (
+    growth_rate_video[1:-1] = (filtered_at_time[2:] - filtered_at_time[:-2]) / (
         2.0 * pixel_size_in_nm
     )
     # Forward difference for first point
-    growth_rate[0] = (filtered_at_time[1] - filtered_at_time[0]) / pixel_size_in_nm[v]
+    growth_rate_video[0] = (
+        filtered_at_time[1] - filtered_at_time[0]
+    ) / pixel_size_in_nm
     # Backward difference for last point
-    growth_rate[-1] = (filtered_at_time[-1] - filtered_at_time[-2]) / pixel_size_in_nm[
-        v
-    ]
+    growth_rate_video[-1] = (
+        filtered_at_time[-1] - filtered_at_time[-2]
+    ) / pixel_size_in_nm
 
-    growth_rate_at_contour = _query_video_at_contour(raw_contours, growth_rate)
+    growth_rate_at_contour = _query_video_at_contour(raw_contours, growth_rate_video)
 
-    return raw_contours, growth_rate_at_contour, growth_rate
+    return raw_contours, growth_rate_at_contour, growth_rate_video
 
 
 def extract_n_longest_contours_from_movie(
