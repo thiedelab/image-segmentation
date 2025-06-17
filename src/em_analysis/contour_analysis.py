@@ -255,3 +255,18 @@ def calculate_contour_intensity_growth(
         rate_increase_at_contour.append(contour_points)
         contours_with_rates.append(contour)
     return rate_increase_at_contour, contours_with_rates
+
+
+
+def calculate_max_height(image, buffer=20, detection_threshold=4):
+    """
+    Calculates the height of a vertically growing dendrite in a single image.
+    """
+    x_averaged_image = np.mean(image, axis=1)
+    start_value = np.mean(x_averaged_image[:buffer])
+    start_std = np.std(x_averaged_image[:buffer])
+    deviation = x_averaged_image - start_value
+    is_far_from_start = np.abs(deviation) > detection_threshold * start_std
+    first_point = np.where(is_far_from_start)[0][0]  # Find the first point where the condition is met
+    return first_point
+
